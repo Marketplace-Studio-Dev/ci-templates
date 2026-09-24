@@ -69,6 +69,21 @@ changing which keys it sends.
 | `deploy_command` | yes | |
 | `smoke_command` | no | `""` |
 
+Secrets are passed by name, one line each, never with `secrets: inherit`.
+GitHub passes nothing through `inherit` to a reusable workflow in another
+organisation, and it would hand over every secret in the repository where
+these templates need two or three:
+
+```yaml
+    secrets:
+      CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+      CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+```
+
+Each template declares its own names, all optional, so a missing one fails the
+secrets check with its name rather than failing the call. When the deploy job
+enters an Environment, that Environment's secret replaces the one passed in.
+
 A project pinned to an old commit keeps running that commit's code, so no
 change here reaches it until its pin moves. The contract matters when a pin
 moves: the new commit must accept every key the project already sends.
