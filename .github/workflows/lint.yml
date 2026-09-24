@@ -1,0 +1,52 @@
+# Checks every change to the templates. Make both jobs required on main.
+
+name: Lint
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions: {}
+
+jobs:
+  actionlint:
+    name: actionlint
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      # The image bundles shellcheck, so the run: scripts are checked too.
+      - uses: docker://rhysd/actionlint:1.7.12@sha256:b1934ee5f1c509618f2508e6eb47ee0d3520686341fec936f3b79331f9315667
+        with:
+          args: -color
+
+  drift:
+    name: templates in step
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      # The deploy templates share every line except the ones marked
+      # template-specific, so a fix made to one cannot miss the others.
+      - name: Compare the deploy templates
+        shell: bash
+        run: |
+          cd .github/workflows
+          reference=deploy-cloudflare.yml
+          status=0
+          for file in deploy-*.yml; do
+            if ! diff -u <(grep -v 'template-specific' "$reference") <(grep -v 'template-specific' "$file"); then
+              echo "::error file=.github/workflows/$file::Differs from $reference outside the lines marked template-specific."
+              status=1
+            fi
+          done
+          exit "$status"
