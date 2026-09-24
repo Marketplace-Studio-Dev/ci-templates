@@ -190,11 +190,11 @@ jobs:
         env:
           ENVIRONMENT: ${{ inputs.environment }}
           COMMIT: ${{ github.sha }}
-          TEMPLATE_COMMIT: ${{ github.job_workflow_sha }}
+          PIPELINE: ${{ github.workflow_ref }}
         run: |
           {
             echo "### Deployed to $ENVIRONMENT"
             echo ""
             echo "- Commit: \`$COMMIT\`"
-            echo "- Template commit: \`$TEMPLATE_COMMIT\`"
+            echo "- Pipeline: \`$PIPELINE\` (its uses: line names the template commit)"
           } >> "$GITHUB_STEP_SUMMARY"

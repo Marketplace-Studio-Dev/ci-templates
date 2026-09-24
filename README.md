@@ -23,8 +23,8 @@ call a reusable workflow from a public repository.
    check the secrets are set, check out, install from the lockfile, then the
    project's `setup`, `migrate`, `deploy` and `smoke` commands in that order.
    Each step except deploy is skipped when its command is empty.
-3. **Record** the deployed commit and this repository's commit in the run
-   summary.
+3. **Record** the deployed commit and the calling pipeline in the run summary.
+   The pipeline's `uses:` line names the template commit.
 
 ## Who sees the secrets
 
