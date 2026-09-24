@@ -1,0 +1,200 @@
+# Deploy a project: install, then the project's own setup, migrate, deploy and
+# smoke commands, each optional except deploy. The name below says which
+# platform, and the secrets are that platform's.
+#
+# Called from a project's .github/workflows/deploy.yml, which pins this file to
+# one commit. The inputs are a contract with that file: see README.md, "The
+# contract". Lines marked template-specific are the only lines that differ
+# between the deploy-*.yml files; CI fails if anything else drifts.
+
+name: Deploy (Cloudflare) # template-specific
+
+on:
+  workflow_call:
+    inputs:
+      environment:
+        description: The GitHub Environment to deploy to, staging or production.
+        type: string
+        required: true
+      node_version:
+        description: The Node.js version to install.
+        type: string
+        required: false
+        default: "22"
+      package_manager:
+        description: npm, pnpm, yarn or bun. Installs from the lockfile.
+        type: string
+        required: false
+        default: npm
+      setup_command:
+        description: Runs after install and before migrate, without secrets. Usually the build.
+        type: string
+        required: false
+        default: ""
+      migrate_command:
+        description: Runs before deploy, with the deploy secrets.
+        type: string
+        required: false
+        default: ""
+      deploy_command:
+        description: Ships the project, with the deploy secrets.
+        type: string
+        required: true
+      smoke_command:
+        description: Runs after deploy, without secrets. A failure fails the run.
+        type: string
+        required: false
+        default: ""
+
+permissions: {}
+
+jobs:
+  # A separate job, so an unexpected environment name is refused before any
+  # job enters it. A job that names an Environment that does not exist creates
+  # it, unprotected, and a job that names one that does gets its secrets.
+  check:
+    name: Check the request
+    runs-on: ubuntu-latest
+    permissions: {}
+    timeout-minutes: 5
+    steps:
+      - name: Refuse an unknown environment, package manager or branch
+        env:
+          ENVIRONMENT: ${{ inputs.environment }}
+          PACKAGE_MANAGER: ${{ inputs.package_manager }}
+          REF: ${{ github.ref }}
+          DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+        run: |
+          case "$ENVIRONMENT" in
+            staging|production) ;;
+            *) echo "::error::environment is '$ENVIRONMENT'. It must be staging or production."; exit 1 ;;
+          esac
+          case "$PACKAGE_MANAGER" in
+            npm|pnpm|yarn|bun) ;;
+            *) echo "::error::package_manager is '$PACKAGE_MANAGER'. It must be npm, pnpm, yarn or bun."; exit 1 ;;
+          esac
+          # A manual run can be started from any branch, which would ship code
+          # nobody merged. The production Environment's branch policy should
+          # refuse that too; this holds even where nobody set one.
+          if [ "$REF" != "refs/heads/$DEFAULT_BRANCH" ]; then
+            echo "::error::Deploys run from $DEFAULT_BRANCH only, and this run is on $REF."
+            exit 1
+          fi
+
+  deploy:
+    name: Deploy to ${{ inputs.environment }}
+    needs: check
+    runs-on: ubuntu-latest
+    environment: ${{ inputs.environment }}
+    permissions:
+      contents: read
+    timeout-minutes: 30
+    # One deploy per environment at a time, so two migrations never race.
+    # Queued rather than cancelled: a deploy stopped halfway is worse than a
+    # late one.
+    concurrency:
+      group: marketplace-studio-deploy-${{ inputs.environment }}
+      cancel-in-progress: false
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - name: Check this environment holds the secrets
+        env:
+          ENVIRONMENT: ${{ inputs.environment }}
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }} # template-specific
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }} # template-specific
+        run: |
+          missing=0
+          for name in CLOUDFLARE_API_TOKEN CLOUDFLARE_ACCOUNT_ID; do # template-specific
+            if [ -z "${!name}" ]; then
+              echo "::error::$name is not set for $ENVIRONMENT. Add it under Settings, Environments, $ENVIRONMENT in this repository."
+              missing=1
+            fi
+          done
+          exit "$missing"
+
+      # No token left in .git/config: nothing after this step pushes, and every
+      # command below runs the project's own dependencies.
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      # pnpm's version comes from the packageManager field in package.json.
+      - uses: pnpm/action-setup@ea17c68df8912ef543352723c149a84f56e3d413 # v6.1.0
+        if: inputs.package_manager == 'pnpm'
+
+      - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
+        if: inputs.package_manager == 'bun'
+
+      # No dependency cache. A deploy holds production credentials, and a clean
+      # install is the one input to it no other workflow can have written.
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: ${{ inputs.node_version }}
+          package-manager-cache: false
+
+      - name: Install dependencies
+        env:
+          PACKAGE_MANAGER: ${{ inputs.package_manager }}
+          COREPACK_ENABLE_DOWNLOAD_PROMPT: "0"
+        run: |
+          case "$PACKAGE_MANAGER" in
+            npm) npm ci ;;
+            pnpm) pnpm install --frozen-lockfile ;;
+            bun) bun install --frozen-lockfile ;;
+            yarn)
+              if ! command -v corepack >/dev/null; then
+                echo "::error::yarn needs corepack, which Node.js 25 and later no longer ship. Use node_version 24 or earlier."
+                exit 1
+              fi
+              corepack enable
+              if [ "$(yarn --version | cut -d. -f1)" -ge 2 ]; then
+                yarn install --immutable
+              else
+                yarn install --frozen-lockfile
+              fi
+              ;;
+          esac
+
+      # Commands arrive through env and run through eval, so the value is data
+      # until the shell reads it, rather than text pasted into this script.
+      - name: Setup
+        if: inputs.setup_command != ''
+        env:
+          COMMAND: ${{ inputs.setup_command }}
+        run: eval "$COMMAND"
+
+      - name: Migrate
+        if: inputs.migrate_command != ''
+        env:
+          COMMAND: ${{ inputs.migrate_command }}
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }} # template-specific
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }} # template-specific
+        run: eval "$COMMAND"
+
+      - name: Deploy
+        env:
+          COMMAND: ${{ inputs.deploy_command }}
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }} # template-specific
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }} # template-specific
+        run: eval "$COMMAND"
+
+      - name: Smoke test
+        if: inputs.smoke_command != ''
+        env:
+          COMMAND: ${{ inputs.smoke_command }}
+        run: eval "$COMMAND"
+
+      - name: Record what shipped
+        env:
+          ENVIRONMENT: ${{ inputs.environment }}
+          COMMIT: ${{ github.sha }}
+          PIPELINE: ${{ github.workflow_ref }}
+        run: |
+          {
+            echo "### Deployed to $ENVIRONMENT"
+            echo ""
+            echo "- Commit: \`$COMMIT\`"
+            echo "- Pipeline: \`$PIPELINE\` (its uses: line names the template commit)"
+          } >> "$GITHUB_STEP_SUMMARY"
