@@ -45,6 +45,18 @@ on:
         type: string
         required: false
         default: ""
+    # Named one by one because `secrets: inherit` only reaches a reusable
+    # workflow in the caller's own organisation, and projects live in theirs.
+    # Optional here so a missing one reaches the check step below, which names
+    # it. When the deploy job enters an Environment, that Environment's secret
+    # of the same name replaces the one passed in.
+    secrets:
+      VERCEL_TOKEN: # template-specific
+        required: false # template-specific
+      VERCEL_ORG_ID: # template-specific
+        required: false # template-specific
+      VERCEL_PROJECT_ID: # template-specific
+        required: false # template-specific
 
 permissions: {}
 
@@ -109,7 +121,7 @@ jobs:
           missing=0
           for name in VERCEL_TOKEN VERCEL_ORG_ID VERCEL_PROJECT_ID; do # template-specific
             if [ -z "${!name}" ]; then
-              echo "::error::$name is not set for $ENVIRONMENT. Add it under Settings, Environments, $ENVIRONMENT in this repository."
+              echo "::error::$name is empty for $ENVIRONMENT. Add it to this repository's $ENVIRONMENT Environment, and check deploy.yml passes it under secrets:."
               missing=1
             fi
           done
